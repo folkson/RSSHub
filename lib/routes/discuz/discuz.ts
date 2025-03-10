@@ -1,9 +1,12 @@
+import { Route } from '@/types';
 import cache from '@/utils/cache';
-import got from '@/utils/got';
+import ofetch from '@/utils/ofetch';
 import { load } from 'cheerio';
 import iconv from 'iconv-lite';
 import { parseDate } from '@/utils/parse-date';
 import { config } from '@/config';
+import ConfigNotFoundError from '@/errors/types/config-not-found';
+import InvalidParameterError from '@/errors/types/invalid-parameter';
 
 function fixUrl(itemLink, baseUrl) {
     // 处理相对链接
@@ -19,14 +22,13 @@ function fixUrl(itemLink, baseUrl) {
 // discuz 7.x 与 discuz x系列 通用文章内容抓取
 async function loadContent(itemLink, charset, header) {
     // 处理编码问题
-    const response = await got({
+    const response = await ofetch.raw(itemLink, {
         method: 'get',
-        url: itemLink,
-        responseType: 'buffer',
+        responseType: 'arrayBuffer',
         headers: header,
     });
 
-    const responseData = iconv.decode(response.data, charset ?? 'utf-8');
+    const responseData = iconv.decode(Buffer.from(response._data), charset ?? 'utf-8');
     if (!responseData) {
         const description = '获取详细内容失败';
         return { description };
@@ -52,7 +54,14 @@ async function loadContent(itemLink, charset, header) {
     return { description };
 }
 
-export default async (ctx) => {
+export const route: Route = {
+    path: ['/:ver{[7x]}/:cid{[0-9]{2}}/:link{.+}', '/:ver{[7x]}/:link{.+}', '/:link{.+}'],
+    name: 'Unknown',
+    maintainers: [],
+    handler,
+};
+
+async function handler(ctx) {
     let link = ctx.req.param('link');
     const ver = ctx.req.param('ver') ? ctx.req.param('ver').toUpperCase() : undefined;
     const cid = ctx.req.param('cid');
@@ -60,21 +69,20 @@ export default async (ctx) => {
 
     const cookie = cid === undefined ? '' : config.discuz.cookies[cid];
     if (cookie === undefined) {
-        throw new Error('缺少对应论坛的cookie.');
+        throw new ConfigNotFoundError('缺少对应论坛的cookie.');
     }
 
     const header = {
         Cookie: cookie,
     };
 
-    const response = await got({
+    const response = await ofetch.raw(link, {
         method: 'get',
-        url: link,
-        responseType: 'buffer',
+        responseType: 'arrayBuffer',
         headers: header,
     });
 
-    const responseData = response.data;
+    const responseData = Buffer.from(response._data);
     // 若没有指定编码，则默认utf-8
     const contentType = response.headers['content-type'] || '';
     let $ = load(iconv.decode(responseData, 'utf-8'));
@@ -141,13 +149,13 @@ export default async (ctx) => {
             )
         );
     } else {
-        throw new Error('不支持当前Discuz版本.');
+        throw new InvalidParameterError('不支持当前Discuz版本.');
     }
 
-    ctx.set('data', {
+    return {
         title: $('head > title').text(),
         description: $('head > meta[name=description]').attr('content'),
         link,
         item: items,
-    });
-};
+    };
+}
